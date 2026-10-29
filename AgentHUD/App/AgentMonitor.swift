@@ -16,11 +16,31 @@ final class AgentMonitor {
     var selectedId: String?
     /// When the ingest last produced new data, for the header's "last refreshed" line.
     private(set) var lastRefresh = Date()
+    /// How far the first read of the live transcripts has got. Nil until the first poll comes back.
+    private(set) var progress: LoadProgress?
 
     private let engine = IngestEngine()
     private let history = HistoryIndex()
     private var liveTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
+
+    /// Long transcripts take seconds to read, so for a while after launch an empty list means "not yet", not "none".
+    var isLoading: Bool { demo == nil && !(progress?.isComplete ?? false) }
+
+    /// "Reading sessions…" until the session count is known, then "Reading 7 of 23 sessions…".
+    var loadingText: String {
+        guard let progress, progress.total > 0 else { return "Reading sessions…" }
+        return "Reading \(progress.read) of \(progress.total) sessions…"
+    }
+
+    var loadingFraction: Double {
+        guard let progress, progress.total > 0 else { return 0 }
+        return Double(progress.read) / Double(progress.total)
+    }
+
+    /// Time spent on first reads per poll: long enough to make progress, short enough that sessions
+    /// already read show up and the progress line moves.
+    static let firstReadBudget: Duration = .milliseconds(300)
 
     var tokensPerMinute: Int { agents.reduce(0) { $0 + $1.tokensPerMinute } }
     var activeCount: Int { agents.filter(\.activity.isActive).count }
@@ -58,11 +78,14 @@ final class AgentMonitor {
         guard liveTask == nil else { return }
         liveTask = Task { [weak self, engine] in
             while !Task.isCancelled {
-                let snapshots = await engine.poll()
+                let snapshots = await engine.poll(budget: AgentMonitor.firstReadBudget)
+                let progress = await engine.progress
                 let live = snapshots.filter { !$0.isEnded }, ended = snapshots.filter(\.isEnded)
                 if self?.agents != live { self?.agents = live; self?.lastRefresh = Date() }
                 if self?.recent != ended { self?.recent = ended }
-                try? await Task.sleep(for: .seconds(1))
+                if self?.progress != progress { self?.progress = progress }
+                // While transcripts are still being read for the first time, go straight back for more.
+                try? await Task.sleep(for: progress.isComplete ? .seconds(1) : .milliseconds(20))
             }
         }
         statsTask = Task { [weak self, history] in

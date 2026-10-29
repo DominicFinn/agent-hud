@@ -11,6 +11,7 @@ enum LaneRange: Int, CaseIterable {
 struct LanesPanel: View {
     let agents: [AgentSnapshot]
     @Binding var range: LaneRange
+    var emptyText = "No sessions to plot"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let trackX: CGFloat = 96, rowHeight: CGFloat = 28
@@ -102,7 +103,7 @@ struct LanesPanel: View {
             context.label("+\(hidden) more", at: CGPoint(x: 0, y: gridBottom + 8), size: 10, color: Theme.mute, anchor: .leading)
         }
         if rows.isEmpty {
-            context.label("No sessions to plot", at: CGPoint(x: size.width / 2, y: 60), size: 13, color: Theme.mute)
+            context.label(emptyText, at: CGPoint(x: size.width / 2, y: 60), size: 13, color: Theme.mute)
         }
     }
 }

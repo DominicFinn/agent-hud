@@ -10,7 +10,7 @@ enum SnapshotRenderer {
         Task {
             // Live mode needs a poll and the first history pass before there is anything to draw.
             if monitor.demo == nil {
-                for _ in 0..<40 where monitor.stats.isBackfilling || monitor.agents.isEmpty { try? await Task.sleep(for: .milliseconds(500)) }
+                for _ in 0..<80 where monitor.stats.isBackfilling || monitor.isLoading { try? await Task.sleep(for: .milliseconds(500)) }
                 // Ended sessions load one per poll; wait for the history to fill in.
                 try? await Task.sleep(for: .seconds(Double(IngestEngine.historyLimit) + 2))
             }

@@ -2,7 +2,7 @@ import HUDCore
 import SwiftUI
 
 enum HeroTab: String, CaseIterable {
-    case flow, brain, loops, files
+    case flow, brain, loops, files, recap
 
     var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
     /// Keyboard shortcut, kept from the previous build.
@@ -35,12 +35,6 @@ struct DashboardView: View {
 
     private func persist(_ key: String, _ value: Double) { UserDefaults.standard.set(value, forKey: key) }
     @FocusState private var focused: Bool
-    /// First row shown in the session rail, and how many rows fit (kept for the key and wheel handlers).
-    @State private var railStart = 0
-    @State private var railVisible = 1
-    @State private var railHovered = false
-    @State private var wheelMonitor: Any?
-    @State private var wheelAccumulator: CGFloat = 0
 
     init(monitor: AgentMonitor, initialTab: HeroTab = .flow) {
         self.monitor = monitor
@@ -60,11 +54,7 @@ struct DashboardView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true; installWheelMonitor() }
-        .onDisappear {
-            if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
-            wheelMonitor = nil
-        }
+        .onAppear { focused = true }
         .onKeyPress { press in handle(press) }
     }
 
@@ -97,7 +87,7 @@ struct DashboardView: View {
                 .overlay(Text("A").font(Theme.ui(11, .bold)).foregroundStyle(Theme.onInk))
                 .padding(.leading, 76)
             Text("Agents").font(Theme.ui(17, .semibold)).foregroundStyle(Theme.ink)
-            Text("\(monitor.agents.count) sessions · \(monitor.activeCount) active")
+            Text(monitor.isLoading ? monitor.loadingText : "\(monitor.agents.count) sessions · \(monitor.activeCount) active")
                 .font(Theme.ui(12)).foregroundStyle(Theme.mute)
             Spacer(minLength: 12)
             ToolbarButton(title: laneRange.title.capitalizedFirst, symbol: "chevron.down") { cycleRange() }
@@ -162,7 +152,9 @@ struct DashboardView: View {
                 Splitter(axis: .horizontal, value: $heroHeight,
                          range: 200...max(200, bodyHeight - Splitter.thickness - 150),
                          onCommit: { persist("heroHeight", heroHeight) })
-                LanesPanel(agents: rows, range: $laneRange).frame(maxHeight: .infinity)
+                LanesPanel(agents: rows, range: $laneRange,
+                           emptyText: monitor.isLoading ? monitor.loadingText : "No sessions to plot")
+                    .frame(maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity)
 
@@ -181,90 +173,85 @@ struct DashboardView: View {
 
     // MARK: Session rail
 
-    /// How many cards fit in the rail; the footer line lives in the gap under the last one.
+    /// How many cards fit in the rail when it cannot scroll.
     private static func railCapacity(_ height: CGFloat) -> Int {
         max(1, Int((height + 8) / (AgentCard.height + 8)))
     }
 
-    /// A window of cards rather than a scroll view: ImageRenderer cannot draw a ScrollView, so
-    /// snapshots would come back blank. The footer, the wheel and ↑/↓ move the window instead.
+    /// Live, the rail is a scroll view that fills its column. ImageRenderer cannot draw a ScrollView,
+    /// so `--snapshot` gets the cards that fit and a count of the rest.
+    @ViewBuilder
     private func rail(_ rows: [AgentSnapshot], height: CGFloat) -> some View {
-        let visible = Self.railCapacity(height)
-        let start = max(0, min(railStart, rows.count - visible))
-        let below = max(0, rows.count - start - visible)
-        return VStack(spacing: 8) {
-            ForEach(Array(rows.dropFirst(start).prefix(visible))) { agent in
-                let showTerminal = terminalAction(agent)
-                AgentCard(agent: agent, selected: agent.id == monitor.selected?.id, onShowTerminal: showTerminal)
-                    .contentShape(Rectangle())
-                    .onTapGesture { monitor.selectedId = agent.id }
-                    .contextMenu {
-                        if let showTerminal { Button("Show in Terminal", action: showTerminal) }
+        if staticRendering {
+            let visible = Self.railCapacity(height)
+            VStack(spacing: 8) {
+                ForEach(rows.prefix(visible)) { railCard($0) }
+                if rows.isEmpty { emptyRail } else if monitor.isLoading { loadingLine }
+                if rows.count > visible {
+                    Text("+\(rows.count - visible) more").font(Theme.ui(11)).foregroundStyle(Theme.mute)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Spacer(minLength: 0)
+            }
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 8) {
+                        ForEach(rows) { railCard($0).id($0.id) }
+                        if rows.isEmpty { emptyRail } else if monitor.isLoading { loadingLine }
                     }
-            }
-            if rows.isEmpty {
-                Card {
-                    Text("No sessions — start one with `claude`")
-                        .font(Theme.ui(12)).foregroundStyle(Theme.mute)
                 }
-                .frame(height: AgentCard.height)
-            }
-            if rows.count > visible {
-                HStack(spacing: 4) {
-                    Text([start > 0 ? "\(start) above" : nil, below > 0 ? "+\(below) more" : nil]
-                        .compactMap { $0 }.joined(separator: " · "))
-                        .font(Theme.ui(11)).foregroundStyle(Theme.mute)
-                    Spacer(minLength: 4)
-                    RailPageButton(symbol: "chevron.up", enabled: start > 0) { scrollRail(by: -visible, rows.count) }
-                    RailPageButton(symbol: "chevron.down", enabled: below > 0) { scrollRail(by: visible, rows.count) }
+                .onChange(of: monitor.selectedId) { _, id in
+                    // With no anchor, scrollTo moves only as far as it takes to show the card.
+                    if let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
+                }
+                .onChange(of: monitor.agents.map(\.id)) { old, new in
+                    // A session that just started should be on screen, not hidden above or below.
+                    if let fresh = new.last(where: { !old.contains($0) }) {
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(fresh) }
+                    }
                 }
             }
-            Spacer(minLength: 0)
         }
-        .contentShape(Rectangle())
-        .onContinuousHover { phase in
-            if case .active = phase { railHovered = true } else { railHovered = false }
+    }
+
+    private func railCard(_ agent: AgentSnapshot) -> some View {
+        let showTerminal = terminalAction(agent)
+        return AgentCard(agent: agent, selected: agent.id == monitor.selected?.id, onShowTerminal: showTerminal)
+            .contentShape(Rectangle())
+            .onTapGesture { monitor.selectedId = agent.id }
+            .contextMenu {
+                if let showTerminal { Button("Show in Terminal", action: showTerminal) }
+            }
+    }
+
+    private var emptyRail: some View {
+        Card {
+            if monitor.isLoading {
+                loadingLine
+            } else {
+                Text("No sessions — start one with `claude`")
+                    .font(Theme.ui(12)).foregroundStyle(Theme.mute)
+            }
         }
-        .onChange(of: height, initial: true) { railVisible = visible }
-        .onChange(of: monitor.agents.map(\.id)) { old, new in
-            // A session that just started should be on screen, not hidden above or below the window.
-            guard let fresh = new.last(where: { !old.contains($0) }),
-                  let index = self.rows.firstIndex(where: { $0.id == fresh }) else { return }
-            revealInRail(index)
+        .frame(height: AgentCard.height)
+    }
+
+    /// Under the cards read so far, or in place of them: how many transcripts are left to read.
+    private var loadingLine: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(monitor.loadingText).font(Theme.ui(12)).foregroundStyle(Theme.mute)
+            BarTrack(fraction: monitor.loadingFraction, color: Theme.reading, height: 4)
+                .frame(height: 4)
+                .animation(.easeOut(duration: 0.2), value: monitor.loadingFraction)
         }
+        .padding(.vertical, 4)
     }
 
     /// Live sessions only: an ended one has no terminal, and the demo fleet's pids are made up.
     private func terminalAction(_ agent: AgentSnapshot) -> (() -> Void)? {
         guard !agent.isEnded, agent.pid > 1, monitor.demo == nil else { return nil }
         return { TerminalFocus.show(pid: agent.pid) }
-    }
-
-    private func scrollRail(by delta: Int, _ count: Int) {
-        railStart = max(0, min(max(0, count - railVisible), railStart + delta))
-    }
-
-    /// Moves the window the least needed to show `index`.
-    private func revealInRail(_ index: Int) {
-        if index < railStart { railStart = index }
-        else if index >= railStart + railVisible { railStart = index - railVisible + 1 }
-    }
-
-    /// The rail has no scroll view to receive the wheel, so the window listens for it while the pointer is over it.
-    private func installWheelMonitor() {
-        guard wheelMonitor == nil, !staticRendering else { return }
-        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard railHovered else { return event }
-            wheelAccumulator += event.scrollingDeltaY
-            // One card per notch on a mouse; trackpads send many small deltas, so step once per card height.
-            let step = event.hasPreciseScrollingDeltas ? AgentCard.height / 2 : 1
-            while abs(wheelAccumulator) >= step {
-                scrollRail(by: wheelAccumulator > 0 ? -1 : 1, rows.count)
-                wheelAccumulator -= wheelAccumulator > 0 ? step : -step
-            }
-            if event.phase == .ended || event.momentumPhase == .ended { wheelAccumulator = 0 }
-            return nil
-        }
     }
 
     private var heroCard: some View {
@@ -280,9 +267,11 @@ struct DashboardView: View {
                         case .brain: BrainView(agent: agent)
                         case .loops: LoopsView(agent: agent)
                         case .files: FilesView(agent: agent)
+                        case .recap: RecapView(agent: agent, onShowTerminal: terminalAction(agent))
                         }
                     } else {
-                        Text("No session selected").font(Theme.ui(13)).foregroundStyle(Theme.mute)
+                        Text(monitor.isLoading ? monitor.loadingText : "No session selected")
+                            .font(Theme.ui(13)).foregroundStyle(Theme.mute)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
@@ -328,26 +317,6 @@ struct DashboardView: View {
         let current = rows.firstIndex { $0.id == monitor.selected?.id } ?? 0
         let next = max(0, min(rows.count - 1, current + delta))
         monitor.selectedId = rows[next].id
-        revealInRail(next)
-    }
-}
-
-/// The rail footer's page up / page down chevrons.
-private struct RailPageButton: View {
-    let symbol: String
-    let enabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(enabled ? Theme.ink : Theme.mute.opacity(0.5))
-                .frame(width: 22, height: 18)
-                .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.border, lineWidth: 1))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
     }
 }
 

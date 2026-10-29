@@ -5,10 +5,18 @@ public struct SessionState: Sendable {
     public static let bucketSeconds: TimeInterval = 5
     public static let bucketCount = 60
     static let tickerLimit = 40
+    /// Prompts and replies kept for the recap; enough for a few lines of a wide pane.
+    static let noteLimit = 600
     static let stepLimit = 240
     static let laneWindow: TimeInterval = 6 * 3600
 
     public private(set) var title: String?
+    public private(set) var agentName: String?
+    public private(set) var aiTitle: String?
+    public private(set) var firstPrompt: SessionNote?
+    public private(set) var lastPrompt: SessionNote?
+    public private(set) var lastReply: SessionNote?
+    public private(set) var pullRequests: [PullRequestLink] = []
     public private(set) var gitBranch: String?
     public private(set) var model: String?
     public private(set) var usage = TokenUsage()
@@ -50,9 +58,24 @@ public struct SessionState: Sendable {
 
     public init() {}
 
+    public var recap: SessionRecap {
+        SessionRecap(customTitle: title ?? agentName, aiTitle: aiTitle, firstPrompt: firstPrompt,
+                     lastPrompt: lastPrompt, lastReply: lastReply, pullRequests: pullRequests)
+    }
+
     public mutating func apply(_ event: TranscriptEvent) {
         if let branch = event.gitBranch, !branch.isEmpty { gitBranch = branch }
-        if event.role == .title { title = event.title ?? title; return }
+        if event.role == .title {
+            title = event.title ?? title
+            agentName = event.agentName ?? agentName
+            aiTitle = event.aiTitle ?? aiTitle
+            return
+        }
+        if event.role == .link {
+            // Claude Code writes the same link several times as the PR is created and updated.
+            if let link = event.pullRequest, !pullRequests.contains(where: { $0.url == link.url }) { pullRequests.append(link) }
+            return
+        }
         // Subagent chatter is accounted for in its own transcript.
         guard !event.isSidechain else { return }
         let date = event.timestamp ?? Date()
@@ -63,7 +86,7 @@ public struct SessionState: Sendable {
         switch event.role {
         case .assistant: applyAssistant(event, at: date)
         case .user: applyUser(event, at: date)
-        case .title, .other: break
+        case .title, .link, .other: break
         }
     }
 
@@ -99,6 +122,7 @@ public struct SessionState: Sendable {
                 set(.responding, at: date)
                 guard !text.isEmpty else { break }
                 push(.responding, text, at: date)
+                lastReply = SessionNote(text: TranscriptParser.snippet(text, limit: Self.noteLimit), date: date)
                 addStep(.result, .responding, label: "reply", detail: text, tokens: text.count / 4, at: date)
             case .toolUse(let call):
                 applyToolUse(call, at: date)
@@ -142,6 +166,11 @@ public struct SessionState: Sendable {
         if event.isUserPrompt {
             let text = event.blocks.lazy.compactMap { if case .text(let text) = $0 { text } else { nil } }.first ?? "(attachment)"
             guard !Self.isSystemNoise(text) else { return }
+            if !event.isInjected {
+                let note = SessionNote(text: TranscriptParser.snippet(text, limit: Self.noteLimit), date: date)
+                if firstPrompt == nil { firstPrompt = note }
+                lastPrompt = note
+            }
             pendingTools.removeAll()
             turnIndex += 1
             promptTicks.append(date)

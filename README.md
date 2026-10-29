@@ -87,9 +87,9 @@ history plus current tok/min.
 | Quit | **⌘Q**. Closing the dashboard alone leaves the widget running |
 
 Inside the dashboard: `↑ ↓` select a session · `t` brings its terminal to the front · `f` `b` `l` `s`
-switch the hero tab · `p` blurs the thought stream for screen-sharing · `1` `2` `7` set the token-burn
-range. The terminal icon on a session card, or right-click → Show in Terminal, does the same as `t`. Clicking a node in the flow
-graph opens its detail popover.
+`r` switch the hero tab · `p` blurs the thought stream for screen-sharing · `1` `2` `7` set the
+token-burn range. The terminal icon on a session card, or right-click → Show in Terminal, does the
+same as `t`. Clicking a node in the flow graph opens its detail popover. The session list scrolls.
 
 Every border between panes is draggable — the rail, the stats column, the flow/lanes split, the
 thought stream — and the sizes persist. The window resizes freely with no locked aspect ratio:
@@ -107,11 +107,19 @@ nothing scales, the layout reflows.
   right on curved links and every file lines up in one column: its dot is sized by edit count, its
   link and diff bar by lines changed, and a dashed ring marks a change made by a shell command
   rather than an Edit call.
+- **Recap** — what the session is about, for telling apart sessions that share a terminal name or a
+  folder: Claude Code's own title for it (or the name you gave it with `/rename`), the prompt it
+  started with, your latest prompt and its last reply, plus where it runs, what it has edited and any
+  PRs it opened. Skill instructions, messages from other sessions and compaction summaries are not
+  counted as prompts.
 
 ![The Files tab](docs/images/files.png)
 
 ### Things worth knowing
 
+- At launch every live session's transcript is read from the start, which takes a few seconds when
+  they are long. Sessions appear as they are read, newest first, and the list, header and widget
+  say how many are left ("Reading 7 of 23 sessions…") rather than claiming there are none.
 - Finished sessions stay in **Recent** for 3 days (max 8) and stay fully browsable. The widget, Dock
   tile and counters only ever count live sessions.
 - **tok/min** is *output* tokens over the trailing minute; it reads zero for idle agents.
@@ -156,7 +164,7 @@ use **JetBrains Mono**, falling back to SF Mono. Neither font is bundled.
   - `FlowLayout.swift` turns a turn's steps into positioned nodes and edges (pure geometry, no
     SwiftUI, independently testable); `FlowGraphView.swift` draws them.
   - `HeroTabs.swift` — brain graph and loop radar. `FileTreeLayout.swift` + `FilesView.swift` — the
-    working directory graph.
+    working directory graph. `RecapView.swift` — the recap tab.
   - `AgentCard.swift`, `LanesPanel.swift`, `StatsRail.swift`, `WidgetView.swift`, `DockTileView.swift`.
 - **`design_handoff_agent_hud_light/`** — the design handoff this UI is built from (frame `3b`).
   `design_handoff_agent_hud_terminal/` (`3a`) and `design_handoff_agent_hud/` (the original neon
@@ -176,7 +184,9 @@ flickers, and the splitter holds its cursor for the length of a drag instead of 
 out from under the pointer.
 
 Panes window their content rather than scrolling it — `ImageRenderer`
-cannot draw a `ScrollView`, so `--snapshot` would come back blank for any pane that used one.
+cannot draw a `ScrollView`, so `--snapshot` would come back blank for any pane that used one. The
+session rail is the exception: live it is a `ScrollView`, and under `--snapshot` it draws the cards
+that fit and a "+N more" line.
 
 ## Contributing
 

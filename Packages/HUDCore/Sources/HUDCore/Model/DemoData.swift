@@ -93,7 +93,7 @@ public enum DemoData {
         let resolved = LoopInfo(label: "edit→pytest", tool: "Bash", signature: "Bash|pytest -k retry", iterations: (0..<3).map {
             LoopInfo.Iteration(duration: 40 + Double($0), tokens: 1_900, errorText: "expected retries")
         }, resolved: true)
-        return AgentSnapshot(
+        var snapshot = AgentSnapshot(
             sessionId: "demo-\(repo)", pid: Int32(index), name: repo, repo: repo, cwd: "/demo/\(repo)",
             gitBranch: branch, model: model, activity: activity, activitySince: now.addingTimeInterval(-14 * 60),
             usage: TokenUsage(input: tokens / 50, output: tokens / 25, cacheRead: tokens * 9 / 10, cacheCreation: tokens / 25),
@@ -106,6 +106,39 @@ public enum DemoData {
             plan: plan, loops: looping ? [loop] : repo == "orbit-core" ? [resolved] : [], brain: brain(now: now),
             contextSplit: (files: 61_000, tools: 34_000, thinking: 21_000), etaMinutes: activity.isActive ? 18 - index * 3 : nil
         )
+        snapshot.recap = recap(repo: repo, now: now)
+        return snapshot
+    }
+
+    static func recap(repo: String, now: Date) -> SessionRecap {
+        let (title, first, last, reply): (String, String, String, String) = switch repo {
+        case "orbit-core": ("Retry handler race condition",
+                            "the retry handler sometimes double-sends. can you find out why and fix it?",
+                            "ok that makes sense, go ahead and fix it and add a test for the race",
+                            "The backoff timer fires before the mutex releases, so the second attempt reads stale state. I'm moving the release ahead of the timer.")
+        case "lumen-ui": ("Theme toggle with semantic tokens",
+                          "add a light/dark toggle to the settings screen",
+                          "use the semantic tokens rather than raw colours please",
+                          "Switched ThemeToggle to the semantic palette. The settings screen now follows the system setting until you pick one.")
+        case "lantern": ("Cache warm-hit test failures",
+                         "test_cache is flaky on CI, can you look",
+                         "try running it with -x so we see the first failure",
+                         "test_warm_hit still fails: the cache is cleared between the fixture and the assertion.")
+        case "sandpiper": ("Python 3.12 dependency upgrade",
+                           "upgrade us to python 3.12",
+                           "check the pinned versions still resolve",
+                           "Two pins block 3.12: numpy 1.24 and an old grpcio. Both have compatible releases.")
+        default: ("Legacy events table migration",
+                  "migrate the events service to the new schema",
+                  "what's left?",
+                  "The new tables are in place. Should I also migrate the legacy events table?")
+        }
+        return SessionRecap(aiTitle: title,
+                            firstPrompt: SessionNote(text: first, date: now.addingTimeInterval(-52 * 60)),
+                            lastPrompt: SessionNote(text: last, date: now.addingTimeInterval(-14 * 60)),
+                            lastReply: SessionNote(text: reply, date: now.addingTimeInterval(-2 * 60)),
+                            pullRequests: repo == "lumen-ui" ? [PullRequestLink(url: "https://github.com/demo/lumen-ui/pull/42",
+                                                                                number: 42, repository: "demo/lumen-ui")] : [])
     }
 
     static func ticker(repo: String, activity: ActivityKind, looping: Bool, now: Date) -> [TickerItem] {

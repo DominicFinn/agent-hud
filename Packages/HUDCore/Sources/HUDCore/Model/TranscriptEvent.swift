@@ -4,7 +4,8 @@ import Foundation
 /// reduced to the fields the HUD cares about. Parsing is deliberately lenient: the
 /// format is undocumented and gains fields between CLI versions.
 public struct TranscriptEvent: Sendable, Equatable {
-    public enum Role: Sendable, Equatable { case assistant, user, title, other }
+    /// `title` covers the names a session is given: custom-title, agent-name and ai-title. `link` is a PR it opened.
+    public enum Role: Sendable, Equatable { case assistant, user, title, link, other }
 
     public enum Block: Sendable, Equatable {
         case thinking(String)
@@ -37,9 +38,17 @@ public struct TranscriptEvent: Sendable, Equatable {
     public var uuid: String?
     public var timestamp: Date?
     public var isSidechain = false
+    /// A user line Claude Code wrote rather than the person: a skill's instructions, a message from another
+    /// session, a compaction summary. It still drives the turn, but it is not something anyone asked.
+    public var isInjected = false
     public var gitBranch: String?
     public var cwd: String?
+    /// The name the user gave the session with /rename.
     public var title: String?
+    public var agentName: String?
+    /// Claude Code's own few-word summary of what the session is about.
+    public var aiTitle: String?
+    public var pullRequest: PullRequestLink?
     public var messageId: String?
     public var model: String?
     public var usage: TokenUsage?
@@ -63,6 +72,9 @@ public enum TranscriptParser {
         var event = TranscriptEvent(role: .other)
         event.uuid = object["uuid"] as? String
         event.isSidechain = object["isSidechain"] as? Bool ?? false
+        let origin = (object["origin"] as? [String: Any])?["kind"] as? String
+        event.isInjected = object["isMeta"] as? Bool == true || object["isCompactSummary"] as? Bool == true
+            || (origin != nil && origin != "human")
         event.gitBranch = object["gitBranch"] as? String
         event.cwd = object["cwd"] as? String
         if let stamp = object["timestamp"] as? String { event.timestamp = parseDate(stamp) }
@@ -73,6 +85,20 @@ public enum TranscriptParser {
         case "custom-title":
             event.role = .title
             event.title = object["customTitle"] as? String
+            return event
+        case "agent-name":
+            event.role = .title
+            event.agentName = object["agentName"] as? String
+            return event
+        case "ai-title":
+            event.role = .title
+            event.aiTitle = object["aiTitle"] as? String
+            return event
+        case "pr-link":
+            guard let url = object["prUrl"] as? String else { return event }
+            event.role = .link
+            event.pullRequest = PullRequestLink(url: url, number: object["prNumber"] as? Int,
+                                                repository: object["prRepository"] as? String)
             return event
         default:
             return event

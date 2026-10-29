@@ -11,6 +11,9 @@ public actor IngestEngine {
         /// Last known registry entry; kept so an ended session can still be described.
         var entry: RegistryEntry?
         var endedAt: Date?
+        /// False until the transcript has been read once. The first read is the whole file, which for
+        /// a long session is hundreds of megabytes, so first reads are spread over several polls.
+        var hasRead = false
 
         init(url: URL) {
             tailer = TranscriptTailer(url: url)
@@ -29,6 +32,8 @@ public actor IngestEngine {
     private var tracked: [String: Tracked] = [:]
     /// Transcripts of sessions that ended before the app launched, loaded one per poll so startup stays snappy.
     private var backlog: [URL]?
+    /// How many live sessions have been read, after the last poll.
+    public private(set) var progress = LoadProgress(read: 0, total: 0)
 
     public init(claudeHome: URL = SessionRegistry.defaultClaudeHome) {
         registry = SessionRegistry(claudeHome: claudeHome)
@@ -36,7 +41,12 @@ public actor IngestEngine {
     }
 
     /// Reads whatever was appended since the last call. Returns live agents first, then recently ended sessions.
-    public func poll(now: Date = Date()) -> [AgentSnapshot] {
+    ///
+    /// With a `budget`, transcripts not read yet are read only until it runs out (at least one per poll),
+    /// and sessions still unread are left out of the result; `progress` says how many are left.
+    /// Without one, everything is read before returning.
+    public func poll(now: Date = Date(), budget: Duration? = nil) -> [AgentSnapshot] {
+        let clock = ContinuousClock(), started = clock.now
         let entries = registry.liveEntries()
         let liveIds = Set(entries.map(\.sessionId))
 
@@ -56,13 +66,17 @@ public actor IngestEngine {
         tracked = tracked.filter { $0.value.endedAt.map { now.timeIntervalSince($0) < Self.historyWindow } ?? true }
 
         var live: [(snapshot: AgentSnapshot, busy: Bool, recency: Date)] = [], ended: [AgentSnapshot] = []
-        for id in tracked.keys {
+        var firstReads = 0
+        for id in Self.readOrder(tracked) {
             guard var session = tracked[id] else { continue }
             let isLive = session.endedAt == nil
+            if !session.hasRead, let budget, firstReads > 0, clock.now - started > budget { continue }
+            if !session.hasRead { firstReads += 1 }
             var subagents: [SubagentInfo]?
-            if isLive || session.lastScan == .distantPast {
+            if isLive || session.lastScan == .distantPast || !session.hasRead {
                 for event in session.tailer.poll() { session.state.apply(event) }
                 subagents = session.subagents.poll()
+                session.hasRead = true
             }
             let busy = session.entry?.isBusy ?? false
             // Idle and ended sessions change nothing, so they are only scanned once.
@@ -87,10 +101,22 @@ public actor IngestEngine {
             // A transcript that never got an answer (opened and quit) is noise in the history.
             else if snapshot.usage.total > 0 { ended.append(snapshot) }
         }
+        let liveSessions = tracked.values.filter { $0.endedAt == nil }
+        progress = LoadProgress(read: liveSessions.filter(\.hasRead).count, total: liveSessions.count)
         // Working agents on top, then the rest by recency; history stays below, newest first.
         live.sort { a, b in a.busy != b.busy ? a.busy : a.recency > b.recency }
         ended.sort { ($0.endedAt ?? .distantPast) > ($1.endedAt ?? .distantPast) }
         return live.map(\.snapshot) + ended.prefix(Self.historyLimit)
+    }
+
+    /// Live sessions first, busy ones before idle, newest first, so the top of the list fills in first.
+    private static func readOrder(_ tracked: [String: Tracked]) -> [String] {
+        tracked.sorted { a, b in
+            let (x, y) = (a.value, b.value)
+            if (x.endedAt == nil) != (y.endedAt == nil) { return x.endedAt == nil }
+            if (x.entry?.isBusy ?? false) != (y.entry?.isBusy ?? false) { return x.entry?.isBusy ?? false }
+            return (x.entry?.startedAt ?? .distantPast) > (y.entry?.startedAt ?? .distantPast)
+        }.map(\.key)
     }
 
     /// The project slug is a lossy encoding of the cwd, so locate the file by session id instead.
@@ -162,6 +188,7 @@ public actor IngestEngine {
         )
         snapshot.files = mergeFiles(transcript: state.fileChanges, disk: session.diskChanges)
         snapshot.endedAt = session.endedAt
+        snapshot.recap = state.recap
         return snapshot
     }
 

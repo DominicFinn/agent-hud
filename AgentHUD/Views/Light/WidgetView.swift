@@ -32,8 +32,14 @@ struct CompactWidgetView: View {
                     ForEach(Array(monitor.agents.prefix(Self.rows))) { AgentLine(agent: $0) }
                     if monitor.agents.isEmpty {
                         VStack(spacing: 4) {
-                            Text("No agents running").font(Theme.ui(12)).foregroundStyle(Theme.mute)
-                            Text("Start a session with `claude`").font(Theme.mono(11)).foregroundStyle(Theme.waiting)
+                            if monitor.isLoading {
+                                Text(monitor.loadingText).font(Theme.ui(12)).foregroundStyle(Theme.mute)
+                                BarTrack(fraction: monitor.loadingFraction, color: Theme.reading, height: 4)
+                                    .frame(width: 160, height: 4)
+                            } else {
+                                Text("No agents running").font(Theme.ui(12)).foregroundStyle(Theme.mute)
+                                Text("Start a session with `claude`").font(Theme.mono(11)).foregroundStyle(Theme.waiting)
+                            }
                         }
                         .frame(maxWidth: .infinity).padding(.vertical, 20)
                     }
@@ -75,7 +81,7 @@ struct CompactWidgetView: View {
         case .alert: "\(monitor.loopingAgents.count) looping"
         case .busy: "\(monitor.activeCount) active"
         case .idle: "all quiet"
-        case .empty: "no agents"
+        case .empty: monitor.isLoading ? "reading…" : "no agents"
         }
     }
 
@@ -188,7 +194,7 @@ struct MiniWidgetView: View {
                         }
                     }
                     if monitor.agents.isEmpty {
-                        Text("no agents").font(Theme.ui(10)).foregroundStyle(Theme.mute)
+                        Text(monitor.isLoading ? "reading…" : "no agents").font(Theme.ui(10)).foregroundStyle(Theme.mute)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }

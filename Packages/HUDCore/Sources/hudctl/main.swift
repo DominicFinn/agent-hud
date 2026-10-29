@@ -28,6 +28,7 @@ let agents = await engine.poll()
 if agents.isEmpty { print("no live agents") }
 for agent in agents {
     print("● \(agent.name)  [\(agent.repo) @ \(agent.gitBranch ?? "-")]  pid \(agent.pid)")
+    if let headline = agent.recap.headline { print("  \(headline)") }
     print("  \(agent.activity.rawValue)  model=\(agent.model ?? "-")  tok/min=\(agent.tokensPerMinute)  ctx=\(agent.contextTokens)/\(agent.contextMax)  turn \(agent.turnIndex)")
     print("  in=\(agent.usage.input) out=\(agent.usage.output) cacheRead=\(agent.usage.cacheRead) cacheWrite=\(agent.usage.cacheCreation) errors=\(agent.errorCount)")
     let tools = agent.toolCounts.sorted { $0.value > $1.value }.prefix(5).map { "\($0.key)×\($0.value)" }

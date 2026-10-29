@@ -90,6 +90,70 @@ public struct PlanStep: Sendable, Equatable, Identifiable {
     }
 }
 
+/// How far the first read of the live sessions' transcripts has got.
+public struct LoadProgress: Sendable, Equatable {
+    public var read: Int
+    public var total: Int
+
+    public init(read: Int, total: Int) {
+        self.read = read
+        self.total = total
+    }
+
+    public var isComplete: Bool { read >= total }
+}
+
+/// A pull request the session opened, from Claude Code's `pr-link` lines.
+public struct PullRequestLink: Sendable, Equatable, Identifiable {
+    public var id: String { url }
+    public var url: String
+    public var number: Int?
+    /// "owner/repo".
+    public var repository: String?
+
+    public init(url: String, number: Int? = nil, repository: String? = nil) {
+        self.url = url
+        self.number = number
+        self.repository = repository
+    }
+}
+
+/// A prompt or reply, flattened to one line and capped, with when it was said.
+public struct SessionNote: Sendable, Equatable {
+    public var text: String
+    public var date: Date
+
+    public init(text: String, date: Date) {
+        self.text = text
+        self.date = date
+    }
+}
+
+/// What a session is about, for telling apart sessions that share a terminal name or a folder.
+public struct SessionRecap: Sendable, Equatable {
+    /// The name the user gave it (/rename), if any.
+    public var customTitle: String?
+    /// Claude Code's own title for the session.
+    public var aiTitle: String?
+    public var firstPrompt: SessionNote?
+    public var lastPrompt: SessionNote?
+    public var lastReply: SessionNote?
+    public var pullRequests: [PullRequestLink] = []
+
+    public init(customTitle: String? = nil, aiTitle: String? = nil, firstPrompt: SessionNote? = nil,
+                lastPrompt: SessionNote? = nil, lastReply: SessionNote? = nil, pullRequests: [PullRequestLink] = []) {
+        self.customTitle = customTitle
+        self.aiTitle = aiTitle
+        self.firstPrompt = firstPrompt
+        self.lastPrompt = lastPrompt
+        self.lastReply = lastReply
+        self.pullRequests = pullRequests
+    }
+
+    /// The best one-line answer to "which session is this": the user's name for it, then Claude Code's.
+    public var headline: String? { customTitle ?? aiTitle }
+}
+
 /// One node of the current turn: the prompt, a thinking block, a tool call or the final answer.
 public struct TurnStep: Sendable, Equatable, Identifiable {
     public enum Kind: Sendable { case prompt, thinking, tool, result }
@@ -248,6 +312,7 @@ public struct AgentSnapshot: Sendable, Identifiable, Equatable {
     public var subagents: [SubagentInfo] = []
     /// Set once the session's process is gone. Ended sessions stay visible as history.
     public var endedAt: Date?
+    public var recap = SessionRecap()
 
     public var isEnded: Bool { endedAt != nil }
 
@@ -260,5 +325,6 @@ public struct AgentSnapshot: Sendable, Identifiable, Equatable {
         a.sessionId == b.sessionId && a.activity == b.activity && a.usage == b.usage && a.heartbeat == b.heartbeat
             && a.steps == b.steps && a.ticker == b.ticker && a.plan == b.plan && a.loops == b.loops
             && a.lanes.count == b.lanes.count && a.lanes.last == b.lanes.last && a.name == b.name && a.files == b.files && a.subagents == b.subagents && a.endedAt == b.endedAt
+            && a.recap == b.recap
     }
 }
