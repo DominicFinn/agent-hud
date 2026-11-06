@@ -97,7 +97,11 @@ struct CompactWidgetView: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 3) {
                 Text("\(monitor.stats.tokensToday.compact) today").font(Theme.ui(12)).foregroundStyle(Theme.ink)
-                Text(String(format: "$%.2f est.", monitor.stats.costToday)).font(Theme.ui(12)).foregroundStyle(Theme.mute)
+                if let limit = monitor.stats.plan?.tightest {
+                    Text("\(limit.percentLeft)% left · \(limit.title.lowercased())").font(Theme.ui(12))
+                        .foregroundStyle(limit.percentUsed >= 75 ? Theme.usageColor(limit) : Theme.mute)
+                        .lineLimit(1)
+                }
             }
         }
     }

@@ -203,7 +203,7 @@ struct DashboardView: View {
         HStack(spacing: 24) {
             metric(monitor.tokensPerMinute.compact, "tok/min")
             metric(monitor.stats.tokensToday.compact, "today")
-            metric(String(format: "$%.2f", monitor.stats.costToday), "est. cost")
+            if let plan = monitor.stats.plan, let limit = plan.tightest { planMetric(limit, fetchedAt: plan.fetchedAt) }
             metric("\(monitor.agents.reduce(0) { $0 + $1.loops.count })", "loops", color: Theme.editing)
             metric("\(monitor.stats.errorsToday)", "errors", color: Theme.error)
             Spacer(minLength: 8)
@@ -211,6 +211,26 @@ struct DashboardView: View {
         }
         .padding(.horizontal, 16).padding(.top, 10)
         .frame(height: 34, alignment: .top)
+    }
+
+    /// The plan limit you'll reach first: "Weekly 65% used · 35% left · resets Sat 17:00". Claude Code
+    /// only refreshes its figures now and then, so an old one says when it is from.
+    private func planMetric(_ limit: PlanUsage.Limit, fetchedAt: Date?) -> some View {
+        HStack(spacing: 5) {
+            Text(limit.title).font(Theme.ui(13)).foregroundStyle(Theme.mute)
+            Text("\(limit.percentUsed)%").font(Theme.ui(13, .semibold)).foregroundStyle(Theme.usageColor(limit))
+            Text("used ·").font(Theme.ui(13)).foregroundStyle(Theme.mute)
+            Text("\(limit.percentLeft)%").font(Theme.ui(13, .semibold)).foregroundStyle(Theme.ink)
+            Text("left").font(Theme.ui(13)).foregroundStyle(Theme.mute)
+            if let reset = limit.resetsAt {
+                Text("· resets \(RecapView.when(reset))").font(Theme.ui(13)).foregroundStyle(Theme.mute)
+            }
+            if let fetchedAt, Date().timeIntervalSince(fetchedAt) > 15 * 60 {
+                Text("· as of \(RecapView.when(fetchedAt))").font(Theme.ui(13)).foregroundStyle(Theme.mute)
+            }
+        }
+        .lineLimit(1)
+        .help("From Claude Code's last usage check. The stats column has every limit.")
     }
 
     private func metric(_ value: String, _ unit: String, color: Color = Theme.ink) -> some View {

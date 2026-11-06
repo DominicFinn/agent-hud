@@ -26,8 +26,6 @@ public struct StatsSnapshot: Sendable, Equatable {
     public var modelMix: [(model: String, share: Double)] = []
     public var cacheRead = 0
     public var cacheDenominator = 0
-    public var costToday = 0.0
-    public var costLastHour = 0.0
     public var tokensToday = 0
     public var errorsToday = 0
     public var tools: [(name: String, count: Int)] = []
@@ -35,6 +33,8 @@ public struct StatsSnapshot: Sendable, Equatable {
     /// 12 weeks × 7 days, oldest week first, Monday first; 0…1, nil for days in the future.
     public var heatmap: [[Double?]] = []
     public var isBackfilling = true
+    /// Your plan's usage limits, from Claude Code's own copy. Nil when there isn't one.
+    public var plan: PlanUsage?
 
     public var cacheHitRate: Double { cacheDenominator == 0 ? 0 : Double(cacheRead) / Double(cacheDenominator) }
 
@@ -42,7 +42,7 @@ public struct StatsSnapshot: Sendable, Equatable {
 
     public static func == (a: StatsSnapshot, b: StatsSnapshot) -> Bool {
         a.tokensToday == b.tokensToday && a.errorsToday == b.errorsToday && a.isBackfilling == b.isBackfilling
-            && a.burn == b.burn && a.costToday == b.costToday
+            && a.burn == b.burn && a.plan == b.plan
     }
 }
 
@@ -72,14 +72,16 @@ public actor HistoryIndex {
     struct Store: Codable {
         var version = 2
         var cursors: [String: Cursor] = [:]
-        /// 2-minute slots keyed by `epoch / slotSeconds`, with the cost accrued in each.
+        /// 2-minute slots keyed by `epoch / slotSeconds`.
         var slots: [Int: TokenUsage] = [:]
-        var slotCost: [Int: Double] = [:]
         var days: [Int: Day] = [:]
     }
 
     private let projectsDirectory: URL
     private let storeURL: URL
+    /// Claude Code's config file, read only for its copy of the plan usage.
+    private let configURL: URL
+    private var plan: (modified: Date, usage: PlanUsage?)?
     private var store = Store()
     private var loaded = false
     private var backfilled = false
@@ -87,6 +89,7 @@ public actor HistoryIndex {
 
     public init(claudeHome: URL = SessionRegistry.defaultClaudeHome, storeURL: URL? = nil) {
         projectsDirectory = claudeHome.appendingPathComponent("projects")
+        configURL = claudeHome.deletingLastPathComponent().appendingPathComponent(".claude.json")
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.storeURL = storeURL ?? support.appendingPathComponent("AgentHUD/index.json")
     }
@@ -101,7 +104,19 @@ public actor HistoryIndex {
             save()
         }
         backfilled = true
-        return snapshot(now: now)
+        var stats = snapshot(now: now)
+        stats.plan = planUsage()
+        return stats
+    }
+
+    /// Re-read only when Claude Code has rewritten the file, which it does every minute or so.
+    private func planUsage() -> PlanUsage? {
+        guard let modified = try? configURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        else { return nil }
+        if let plan, plan.modified == modified { return plan.usage }
+        let usage = PlanUsage.read(from: configURL)
+        plan = (modified, usage)
+        return usage
     }
 
     // MARK: Ingest
@@ -170,7 +185,6 @@ public actor HistoryIndex {
         }
         let slot = Int(date.timeIntervalSince1970) / Self.slotSeconds
         store.slots[slot] = (store.slots[slot] ?? TokenUsage()) + delta
-        store.slotCost[slot, default: 0] += CostEstimator.cost(of: delta, model: model)
     }
 
     // MARK: Query
@@ -195,9 +209,6 @@ public actor HistoryIndex {
             stats.burn[range] = points
         }
 
-        let hourAgo = (nowSeconds - 3600) / Self.slotSeconds
-        stats.costLastHour = store.slotCost.filter { $0.key >= hourAgo }.values.reduce(0, +)
-
         let todayKey = Int((now.timeIntervalSince1970 + zoneOffset) / 86_400)
         let today = store.days[todayKey] ?? Day()
         let total = today.models.values.reduce(TokenUsage(), +)
@@ -205,17 +216,16 @@ public actor HistoryIndex {
         stats.errorsToday = today.errors
         stats.cacheRead = total.cacheRead
         stats.cacheDenominator = total.context
-        stats.costToday = today.models.reduce(0) { $0 + CostEstimator.cost(of: $1.value, model: $1.key) }
 
         // Mix by output tokens: cache reads would otherwise drown out everything.
         var mix: [String: Int] = [:]
-        for (model, usage) in today.models { mix[CostEstimator.shortName(model), default: 0] += usage.output }
+        for (model, usage) in today.models { mix[ModelName.short(model), default: 0] += usage.output }
         let mixTotal = max(1, mix.values.reduce(0, +))
         stats.modelMix = mix.sorted { $0.value > $1.value }.map { ($0.key, Double($0.value) / Double(mixTotal)) }
 
         stats.tools = today.tools.sorted { $0.value > $1.value }.prefix(5).map { ($0.key, $0.value) }
         stats.repos = today.repos.sorted { $0.value > $1.value }.prefix(5).map {
-            ($0.key, $0.value, CostEstimator.shortName(today.repoModels[$0.key] ?? ""))
+            ($0.key, $0.value, ModelName.short(today.repoModels[$0.key] ?? ""))
         }
 
         // Day 0 of the epoch was a Thursday; shift so weeks start on Monday.
@@ -246,7 +256,6 @@ public actor HistoryIndex {
     private func prune(now: Date) {
         let oldestSlot = (Int(now.timeIntervalSince1970) - Self.slotRetention) / Self.slotSeconds
         store.slots = store.slots.filter { $0.key >= oldestSlot }
-        store.slotCost = store.slotCost.filter { $0.key >= oldestSlot }
         let oldestDay = Int((now.timeIntervalSince1970 + zoneOffset) / 86_400) - Self.dayRetention
         store.days = store.days.filter { $0.key >= oldestDay }
         store.cursors = store.cursors.filter { FileManager.default.fileExists(atPath: $0.key) }

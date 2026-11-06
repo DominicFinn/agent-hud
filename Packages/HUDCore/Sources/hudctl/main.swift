@@ -13,8 +13,13 @@ if CommandLine.arguments.dropFirst().first == "stats" {
     let started = Date()
     let stats = await index.refresh()
     print(String(format: "backfill %.1fs", Date().timeIntervalSince(started)))
-    print(String(format: "today: %d tokens · $%.2f est. API cost · $%.2f last hour · %d errors · cache hit %.0f%%",
-                 stats.tokensToday, stats.costToday, stats.costLastHour, stats.errorsToday, stats.cacheHitRate * 100))
+    print(String(format: "today: %d tokens · %d errors · cache hit %.0f%%", stats.tokensToday, stats.errorsToday, stats.cacheHitRate * 100))
+    for limit in stats.plan?.limits ?? [] {
+        print("plan: \(limit.title) \(limit.percentUsed)% used, \(limit.percentLeft)% left, resets \(limit.resetsAt.map { "\($0)" } ?? "-")\(limit.isActive ? "" : " (not active)")")
+    }
+    if let plan = stats.plan {
+        print("week by product:", plan.breakdown.map { "\($0.name) \($0.percent)%" }.joined(separator: " · "), "· fetched \(plan.fetchedAt.map { "\($0)" } ?? "-")")
+    }
     print("models:", stats.modelMix.map { "\($0.model) \(Int($0.share * 100))%" }.joined(separator: " · "))
     print("tools: ", stats.tools.map { "\($0.name) \($0.count)" }.joined(separator: " · "))
     print("repos: ", stats.repos.map { "\($0.name) \($0.tokens)" }.joined(separator: " · "))

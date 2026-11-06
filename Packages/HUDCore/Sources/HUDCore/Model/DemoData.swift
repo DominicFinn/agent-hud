@@ -236,8 +236,6 @@ public enum DemoData {
         stats.modelMix = [("fable-5.1", 0.38), ("sonnet-5", 0.31), ("opus-5", 0.22), ("haiku-4.5", 0.09)]
         stats.cacheRead = 1_900_000
         stats.cacheDenominator = 2_700_000
-        stats.costToday = 41.27
-        stats.costLastHour = 3.10
         stats.tokensToday = 3_120_000
         stats.errorsToday = 12
         stats.tools = [("Read", 412), ("Edit", 188), ("Bash", 143), ("Grep", 97), ("Write", 31)]
@@ -248,6 +246,12 @@ public enum DemoData {
             let value = noise - noise.rounded(.down)
             return value < 0.15 ? 0 : value
         } }
+        stats.plan = PlanUsage(limits: [
+            .init(kind: "five_hour", title: "Session", percentUsed: 42, resetsAt: now.addingTimeInterval(2 * 3600 + 14 * 60)),
+            .init(kind: "weekly_all", title: "Weekly", percentUsed: 65, resetsAt: now.addingTimeInterval(2 * 86_400 + 3 * 3600)),
+            .init(kind: "weekly_scoped", title: "Weekly · Fable", percentUsed: 0, resetsAt: now.addingTimeInterval(2 * 86_400 + 3 * 3600), isActive: false),
+        ], breakdown: [.init(name: "Claude Code", percent: 85), .init(name: "Cowork", percent: 12), .init(name: "Chats", percent: 3)],
+           fetchedAt: now.addingTimeInterval(-70))
         return stats
     }
 }

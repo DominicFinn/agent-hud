@@ -258,8 +258,6 @@ public struct SubagentInfo: Sendable, Equatable, Identifiable {
         guard !finished, let last = lastEventAt else { return false }
         return now.timeIntervalSince(last) < 90
     }
-
-    public var cost: Double { model.map { CostEstimator.cost(of: usage, model: $0) } ?? 0 }
 }
 
 /// Something occupying the agent's context window.

@@ -229,13 +229,12 @@ private func events(_ lines: [String]) -> [TranscriptEvent] {
         #expect(first.tools.first?.name == "Read")
         #expect(first.repos.first?.name == "repo")
         #expect(first.modelMix.first?.model == "opus-5")
-        #expect(abs(first.costToday - CostEstimator.cost(of: TokenUsage(input: 20, output: 80, cacheRead: 2000, cacheCreation: 400, thinking: 10), model: "claude-opus-5")) < 1e-9)
     }
 
     @Test func shortModelNames() {
-        #expect(CostEstimator.shortName("claude-fable-5-1") == "fable-5.1")
-        #expect(CostEstimator.shortName("claude-haiku-4-5-20251001") == "haiku-4.5")
-        #expect(CostEstimator.shortName("claude-opus-5") == "opus-5")
+        #expect(ModelName.short("claude-fable-5-1") == "fable-5.1")
+        #expect(ModelName.short("claude-haiku-4-5-20251001") == "haiku-4.5")
+        #expect(ModelName.short("claude-opus-5") == "opus-5")
     }
 }
 

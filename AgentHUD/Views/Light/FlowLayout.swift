@@ -73,7 +73,7 @@ struct FlowLayout {
                     // Show who did the work: agent type on top, the model it ran on and what it spent below.
                     node.subagent = info
                     node.label = info.agentType
-                    node.sub = "\(CostEstimator.shortName(info.model ?? "?")) · \(info.usage.total.compact)"
+                    node.sub = "\(ModelName.short(info.model ?? "?")) · \(info.usage.total.compact)"
                     node.radius = min(20, max(10, 10 + 0.9 * (Double(info.usage.output) / 100).squareRoot()))
                     node.isRunning = info.isRunning()
                 }

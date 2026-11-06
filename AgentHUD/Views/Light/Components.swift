@@ -105,7 +105,7 @@ struct ModelBadge: View {
 
     var body: some View {
         let color = Theme.modelColor(model)
-        Text(model.map(CostEstimator.shortName) ?? "—")
+        Text(model.map(ModelName.short) ?? "—")
             .font(Theme.ui(11, .medium))
             .foregroundStyle(color)
             .padding(.horizontal, 6).padding(.vertical, 1)

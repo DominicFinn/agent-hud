@@ -51,6 +51,12 @@ enum Theme {
         }
     }
 
+    /// A plan limit: ink while there's room, amber from 75% used, red from 90% or once Claude Code flags it.
+    static func usageColor(_ limit: PlanUsage.Limit) -> Color {
+        if limit.severity != "normal" || limit.percentUsed >= 90 { return error }
+        return limit.percentUsed >= 75 ? editing : ink
+    }
+
     /// Model badge border + text, and the repo leaderboard bars.
     static func modelColor(_ model: String?) -> Color {
         let name = model ?? ""

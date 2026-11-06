@@ -1,7 +1,38 @@
 import HUDCore
 import SwiftUI
 
-/// Right column: token burn, model mix + cache, tools + repos, the 12-week heatmap.
+/// Right column: plan usage, token burn, model mix + cache, tools + repos, the 12-week heatmap.
+/// A limit's track: the used part filled, split by product when there are shares to split it by.
+struct UsageBar: View {
+    let limit: PlanUsage.Limit
+    var shares: [Int] = []
+    static let colors = [Theme.reading, Theme.subagent, Theme.editing, Theme.thinking, Theme.waiting]
+
+    static func color(_ index: Int) -> Color { colors[index % colors.count] }
+
+    var body: some View {
+        Canvas { context, size in
+            let track = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: Theme.Radius.bar)
+            context.fill(track, with: .color(Theme.track))
+            let used = size.width * CGFloat(min(100, limit.percentUsed)) / 100
+            // Past 75% the bar takes the warning colour whatever the split, so it reads at a glance.
+            guard !shares.isEmpty, limit.percentUsed < 75 else {
+                context.fill(Path(CGRect(x: 0, y: 0, width: used, height: size.height)), with: .color(Theme.usageColor(limit)))
+                return
+            }
+            let total = CGFloat(max(1, shares.reduce(0, +)))
+            var x: CGFloat = 0
+            for (index, share) in shares.enumerated() {
+                let width = used * CGFloat(share) / total
+                context.fill(Path(CGRect(x: x, y: 0, width: max(1, width - 1), height: size.height)), with: .color(Self.color(index)))
+                x += width
+            }
+        }
+        .frame(height: 6)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.bar))
+    }
+}
+
 struct StatsRail: View {
     let monitor: AgentMonitor
     @Binding var burnRange: BurnRange
@@ -13,15 +44,79 @@ struct StatsRail: View {
     /// The donut and its legend need more than half the card; the cache figure is happy with the rest.
     private var mixWidth: CGFloat { twoColumn ? (width - 32) * 0.56 : .infinity }
 
+    @Environment(\.staticRendering) private var staticRendering
+
+    /// Live, it scrolls when the cards don't all fit. ImageRenderer cannot draw a ScrollView, so
+    /// `--snapshot` gets the cards that fit.
     var body: some View {
+        if staticRendering {
+            cards
+        } else {
+            ScrollView(.vertical) { cards }
+        }
+    }
+
+    private var cards: some View {
         let stats = monitor.stats
-        VStack(spacing: 8) {
+        return VStack(spacing: 8) {
+            if let plan = stats.plan { usage(plan) }
             burn(stats)
             mixAndCache(stats)
             toolsAndRepos(stats)
             heatmap(stats)
             Spacer(minLength: 0)
         }
+    }
+
+    // MARK: Plan usage
+
+    /// Every limit that applies now, as Claude Code last fetched them. The weekly bar is split by product.
+    private func usage(_ plan: PlanUsage) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Plan usage").font(Theme.ui(13, .semibold)).foregroundStyle(Theme.ink)
+                    Spacer(minLength: 6)
+                    if let fetched = plan.fetchedAt {
+                        Text("as of \(RecapView.when(fetched))").font(Theme.ui(10)).foregroundStyle(Theme.mute)
+                    }
+                }
+                ForEach(plan.limits.filter(\.isActive)) { limit in
+                    let split = limit.kind == "weekly_all" || limit.title == "Weekly" ? plan.breakdown : []
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(limit.title).font(Theme.ui(11, .medium)).foregroundStyle(Theme.ink)
+                            if let reset = limit.resetsAt {
+                                Text("resets \(RecapView.when(reset))").font(Theme.ui(10)).foregroundStyle(Theme.mute)
+                            }
+                            Spacer(minLength: 4)
+                            Text("\(limit.percentUsed)%").font(Theme.ui(11, .semibold)).foregroundStyle(Theme.usageColor(limit))
+                            Text("used · \(limit.percentLeft)% left").font(Theme.ui(10)).foregroundStyle(Theme.mute)
+                        }
+                        .lineLimit(1)
+                        UsageBar(limit: limit, shares: split.map(\.percent))
+                        if !split.isEmpty { legend(split) }
+                    }
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// "Claude Code 85% · Cowork 12% · Chats 3%": each product's share of this week's use.
+    private func legend(_ shares: [PlanUsage.Share]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(shares.enumerated()), id: \.offset) { index, share in
+                HStack(spacing: 3) {
+                    Rectangle().fill(UsageBar.color(index)).frame(width: 6, height: 6)
+                    Text(share.name).font(Theme.ui(10)).foregroundStyle(Theme.mute)
+                    Text("\(share.percent)%").font(Theme.ui(10, .semibold)).foregroundStyle(Theme.ink)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1).minimumScaleFactor(0.8)
+        .help("Each product's share of this week's use")
     }
 
     // MARK: Token burn

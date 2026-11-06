@@ -6,7 +6,8 @@ and which ones are stuck in a loop.
 
 ![The Agent HUD dashboard](docs/images/dashboard.png)
 
-It reads `~/.claude/sessions/*.json` and `~/.claude/projects/**/*.jsonl` and nothing else. **Strictly
+It reads `~/.claude/sessions/*.json`, `~/.claude/projects/**/*.jsonl` and the plan usage Claude Code
+keeps in `~/.claude.json`, and nothing else. **Strictly
 local, read-only, no network, no API keys** — the app makes no outbound connections of any kind and
 never writes into `~/.claude`. Its only output is a cache of its own in Application Support. The one
 thing it does outside itself is bring a session's terminal to the front when you ask it to.
@@ -156,7 +157,14 @@ swift run hudctl search <words>
 - Finished sessions stay in the list, greyed out, and can't be opened. [What it keeps](#what-it-keeps)
   explains why. The widget, Dock tile and counters only ever count live sessions.
 - **tok/min** is *output* tokens over the trailing minute; it reads zero for idle agents.
-- **Cost** is an API list-price equivalent (`CostEstimator.prices`), not what a subscription bills you.
+- **Plan usage**, in the header and at the top of the stats column, is Claude Code's own figure for
+  your limits: the 5-hour session, the weekly limit and any per-model weekly limit that applies, each
+  with how much is used, how much is left and when it resets. The weekly bar is split by product
+  (Claude Code, Cowork, Chats). The header shows whichever limit you'll reach first. The figures come
+  from the copy Claude Code keeps in `~/.claude.json`, which it refreshes now and then rather than
+  constantly, so the card says when they were fetched and the header does too once they're over 15
+  minutes old. There's no estimated cost any more: what a session would cost at API list prices says
+  nothing about how much of your plan is left.
 - **Show in Terminal** finds the session's terminal from its process tree. In Terminal.app and iTerm2
   it selects the exact tab; inside tmux it also selects the pane and switches the most recently used
   client to that session (a detached tmux session has no window to show, so you get a beep). Any
@@ -177,6 +185,7 @@ The app only keeps data it needs to draw the dashboard, and drops it when it sto
 | Ended sessions: folder, branch, model, token and context numbers, activity lanes | Memory | 3 days. The list shows the newest 8 |
 | History index: tokens per model per day, tool and error counts, folder names with their token totals, how far each transcript has been read | `~/Library/Application Support/AgentHUD/index.json` | Daily totals for 100 days, 2-minute token buckets for 8 days, read positions until the transcript is deleted. No prompt or reply text |
 | Window positions, which windows were open, pane sizes, widget size, Blur thoughts | `UserDefaults` | Until you change them |
+| Plan usage: each limit's percentage and reset time, and the week's split by product | Memory | Replaced whenever Claude Code updates its copy |
 | Search queries | Nowhere | Not kept |
 | `--snapshot` PNGs | The folder you give it | Until you delete them. Without `--demo` they show real prompts |
 
@@ -185,6 +194,10 @@ memory, not just from the screen. Its card keeps only the numbers in the third r
 nothing behind it to open. Its search rows are deleted with SQLite's `secure_delete` on, which
 overwrites the text rather than leaving it in free memory pages, and the full-text index is merged so
 the words go too. Resuming the session with `claude --resume` brings it back, read again from the start.
+
+From `~/.claude.json` the app keeps only `cachedUsageUtilization`, Claude Code's copy of your plan
+usage. It reads the file again only when Claude Code has rewritten it, and nothing else in it (account
+details, per-project settings) is kept.
 
 Quitting the app clears everything held in memory. Deleting `index.json` clears the history and forces
 a re-scan, which takes about 7 seconds for 330 MB of transcripts.
@@ -208,7 +221,7 @@ use **JetBrains Mono**, falling back to SF Mono. Neither font is bundled.
 
 - **`Packages/HUDCore`** — all the logic, no UI, unit-tested with `swift test`: transcript parsing,
   incremental tailing, per-session state (activity, turn steps, loops, plan progress, context
-  "brain"), the history index, the search index (`SearchIndex.swift`), the cost estimate and finding
+  "brain"), the history index, the search index (`SearchIndex.swift`), plan usage (`PlanUsage.swift`) and finding
   the terminal a session runs in. `swift run hudctl [stats | search <words>]` prints what the HUD
   sees, which is the fastest way to check ingest without launching the app.
 - **`AgentHUD/Views/Light/`** — the entire interface.
