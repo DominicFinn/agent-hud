@@ -11,6 +11,10 @@ local, read-only, no network, no API keys** — the app makes no outbound connec
 never writes into `~/.claude`. Its only output is a cache of its own in Application Support. The one
 thing it does outside itself is bring a session's terminal to the front when you ask it to.
 
+What sessions said is only held in memory, and only while the session is running. None of it is
+written to disk, and it's dropped when the session ends. [What it keeps](#what-it-keeps) lists
+everything the app stores and for how long.
+
 ## Requirements
 
 - macOS 14 (Sonoma) or newer
@@ -88,12 +92,41 @@ history plus current tok/min.
 
 Inside the dashboard: `↑ ↓` select a session · `t` brings its terminal to the front · `f` `b` `l` `s`
 `r` switch the hero tab · `p` blurs the thought stream for screen-sharing · `1` `2` `7` set the
-token-burn range. The terminal icon on a session card, or right-click → Show in Terminal, does the
-same as `t`. Clicking a node in the flow graph opens its detail popover. The session list scrolls.
+token-burn range · `/` or **⌘F** search. None of these fire while you're typing in the search box. The
+terminal icon on a session card, or right-click → Show in Terminal, does the same as `t`. Clicking a
+node in the flow graph opens its detail popover. The session list scrolls.
 
 Every border between panes is draggable — the rail, the stats column, the flow/lanes split, the
 thought stream — and the sizes persist. The window resizes freely with no locked aspect ratio:
 nothing scales, the layout reflows.
+
+### Search
+
+The search box in the header finds live sessions by folder, name, title or branch, and by anything you
+or Claude said in them. `/` or **⌘F** puts the cursor in it.
+
+- Every word you type has to match. The last one also matches as the start of a word, since you're
+  probably still typing it. The others match whole words and their other forms, so "signing key"
+  finds "signed" but not "significant".
+- Sessions whose folder, name, title or branch match come first, most recently active first. After
+  them come sessions where only something said matched, best match first.
+- Each session appears once, with its best snippet and how many of its messages match. The right of
+  the panel shows the messages either side of that snippet.
+- `↑ ↓` move through the results, `↩` or a click opens the session at its Recap tab, and `esc` clears
+  the search and gives the keyboard back to the dashboard.
+- Blur thoughts blurs the snippets and the preview. Folder and session names stay readable.
+
+Only your prompts and Claude's replies go in. Thinking, tool calls, tool output, subagent transcripts
+and text Claude Code adds itself (skill instructions, compaction summaries) are left out. Ended
+sessions can't be searched: see [What it keeps](#what-it-keeps).
+
+It uses SQLite's full-text search (FTS5), which ships with macOS, so there's nothing extra to install.
+Indexing happens as transcripts are read and searching runs off the main thread, so neither holds up
+the window. To see what it would find for your live sessions, run:
+
+```bash
+swift run hudctl search <words>
+```
 
 ### What the tabs show
 
@@ -120,12 +153,10 @@ nothing scales, the layout reflows.
 - At launch every live session's transcript is read from the start, which takes a few seconds when
   they are long. Sessions appear as they are read, newest first, and the list, header and widget
   say how many are left ("Reading 7 of 23 sessions…") rather than claiming there are none.
-- Finished sessions stay in **Recent** for 3 days (max 8) and stay fully browsable. The widget, Dock
-  tile and counters only ever count live sessions.
+- Finished sessions stay in the list, greyed out, and can't be opened. [What it keeps](#what-it-keeps)
+  explains why. The widget, Dock tile and counters only ever count live sessions.
 - **tok/min** is *output* tokens over the trailing minute; it reads zero for idle agents.
 - **Cost** is an API list-price equivalent (`CostEstimator.prices`), not what a subscription bills you.
-- The history index caches to `~/Library/Application Support/AgentHUD/index.json` — token totals,
-  tool and repo names, no prompt text. Delete it to force a re-scan (~7s for 330 MB of transcripts).
 - **Show in Terminal** finds the session's terminal from its process tree. In Terminal.app and iTerm2
   it selects the exact tab; inside tmux it also selects the pane and switches the most recently used
   client to that session (a detached tmux session has no window to show, so you get a beep). Any
@@ -134,6 +165,29 @@ nothing scales, the layout reflows.
   can't pick the tab.
 - There is no **Interrupt** button, though the design handoff drew one: the app is read-only and has
   no business killing someone's session.
+
+## What it keeps
+
+The app only keeps data it needs to draw the dashboard, and drops it when it stops needing it.
+
+| What | Where | How long |
+|---|---|---|
+| Live sessions: what they're doing, recent prompts and replies, steps, plan and files touched | Memory | While the session runs |
+| Search index: the prompts and replies of live sessions | Memory only, never on disk | While the session runs. One that ends is dropped on the next poll, within about a second |
+| Ended sessions: folder, branch, model, token and context numbers, activity lanes | Memory | 3 days. The list shows the newest 8 |
+| History index: tokens per model per day, tool and error counts, folder names with their token totals, how far each transcript has been read | `~/Library/Application Support/AgentHUD/index.json` | Daily totals for 100 days, 2-minute token buckets for 8 days, read positions until the transcript is deleted. No prompt or reply text |
+| Window positions, which windows were open, pane sizes, widget size, Blur thoughts | `UserDefaults` | Until you change them |
+| Search queries | Nowhere | Not kept |
+| `--snapshot` PNGs | The folder you give it | Until you delete them. Without `--demo` they show real prompts |
+
+When a session ends, the app drops its prompts, replies, titles, steps, plan, file paths and errors from
+memory, not just from the screen. Its card keeps only the numbers in the third row above, so there is
+nothing behind it to open. Its search rows are deleted with SQLite's `secure_delete` on, which
+overwrites the text rather than leaving it in free memory pages, and the full-text index is merged so
+the words go too. Resuming the session with `claude --resume` brings it back, read again from the start.
+
+Quitting the app clears everything held in memory. Deleting `index.json` clears the history and forces
+a re-scan, which takes about 7 seconds for 330 MB of transcripts.
 
 ## Design
 
@@ -154,9 +208,9 @@ use **JetBrains Mono**, falling back to SF Mono. Neither font is bundled.
 
 - **`Packages/HUDCore`** — all the logic, no UI, unit-tested with `swift test`: transcript parsing,
   incremental tailing, per-session state (activity, turn steps, loops, plan progress, context
-  "brain"), the history index, the cost estimate and finding the terminal a session runs in.
-  `swift run hudctl [stats]` prints what the HUD sees, which is the fastest way to check ingest
-  without launching the app.
+  "brain"), the history index, the search index (`SearchIndex.swift`), the cost estimate and finding
+  the terminal a session runs in. `swift run hudctl [stats | search <words>]` prints what the HUD
+  sees, which is the fastest way to check ingest without launching the app.
 - **`AgentHUD/Views/Light/`** — the entire interface.
   - `Theme.swift` — design tokens, type, radii. `Components.swift` — `Card`, `CardHeader`,
     `Segmented`, `ToolbarButton`, `ModelBadge`, `BarTrack`, `Sparkline`, `ProgressRing`.
@@ -165,6 +219,7 @@ use **JetBrains Mono**, falling back to SF Mono. Neither font is bundled.
     SwiftUI, independently testable); `FlowGraphView.swift` draws them.
   - `HeroTabs.swift` — brain graph and loop radar. `FileTreeLayout.swift` + `FilesView.swift` — the
     working directory graph. `RecapView.swift` — the recap tab.
+  - `SearchField.swift` and `SearchPanel.swift`: the header's search box and its results.
   - `AgentCard.swift`, `LanesPanel.swift`, `StatsRail.swift`, `WidgetView.swift`, `DockTileView.swift`.
 - **`design_handoff_agent_hud_light/`** — the design handoff this UI is built from (frame `3b`).
   `design_handoff_agent_hud_terminal/` (`3a`) and `design_handoff_agent_hud/` (the original neon
@@ -195,8 +250,9 @@ should come with a test. UI changes are checked against `--snapshot`, which rend
 including `dashboard-narrow-*` (1040×640) and `dashboard-wide-*` (1680×1000) so both ends of the
 resize range stay verifiable.
 
-Two invariants, please: the app never writes into `~/.claude`, and it never opens a network
-connection.
+Three invariants, please: the app never writes into `~/.claude`, it never opens a network
+connection, and what a session said is never stored on disk or kept after the session ends (the
+`--snapshot` PNGs you ask for aside).
 
 ## License
 

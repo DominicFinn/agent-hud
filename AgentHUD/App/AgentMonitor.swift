@@ -10,7 +10,7 @@ enum WidgetMood: Equatable { case empty, idle, busy, alert }
 final class AgentMonitor {
     /// Live sessions. The widget, the Dock tile and every counter are about these.
     private(set) var agents: [AgentSnapshot] = []
-    /// Sessions that ended in the last day, kept as browsable history in the dashboard.
+    /// Sessions that ended in the last few days. Their cards stay in the rail, greyed out, but can't be opened.
     private(set) var recent: [AgentSnapshot] = []
     private(set) var stats = StatsSnapshot()
     var selectedId: String?
@@ -19,7 +19,9 @@ final class AgentMonitor {
     /// How far the first read of the live transcripts has got. Nil until the first poll comes back.
     private(set) var progress: LoadProgress?
 
-    private let engine = IngestEngine()
+    /// What live sessions have said. The demo swaps in one of its own.
+    @ObservationIgnored private var searchIndex: SearchIndex
+    @ObservationIgnored private let engine: IngestEngine
     private let history = HistoryIndex()
     private var liveTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
@@ -45,7 +47,8 @@ final class AgentMonitor {
     var tokensPerMinute: Int { agents.reduce(0) { $0 + $1.tokensPerMinute } }
     var activeCount: Int { agents.filter(\.activity.isActive).count }
     var loopingAgents: [AgentSnapshot] { agents.filter(\.isLooping) }
-    var selected: AgentSnapshot? { (agents + recent).first { $0.id == selectedId } ?? focus ?? agents.first ?? recent.first }
+    /// Live sessions only: an ended one keeps its card but can't be opened.
+    var selected: AgentSnapshot? { agents.first { $0.id == selectedId } ?? focus ?? agents.first }
 
     /// The agent worth watching: a looping one first, otherwise whoever burns the most tokens.
     var focus: AgentSnapshot? {
@@ -68,11 +71,18 @@ final class AgentMonitor {
     /// Non-nil when showing the prototype's sample fleet instead of real sessions (`--demo busy|idle|alert`).
     var demo: DemoData.Scenario?
 
+    init() {
+        let index = SearchIndex()
+        searchIndex = index
+        engine = IngestEngine(search: index)
+    }
+
     func start() {
         if let demo {
             agents = DemoData.agents(demo)
             recent = DemoData.recent()
             stats = DemoData.stats()
+            searchIndex = DemoData.search(agents)
             return
         }
         guard liveTask == nil else { return }
@@ -106,6 +116,16 @@ final class AgentMonitor {
             if self.stats != snapshot { self.stats = snapshot }
         }
     }
+
+    /// Live sessions matching `query`. Off the main thread, since the engine may be holding the index
+    /// while it reads a long transcript.
+    func search(_ query: String) async -> [SearchResult] {
+        let index = searchIndex
+        return await Task.detached { index.search(query) }.value
+    }
+
+    /// The same, straight away, for `--snapshot`, which has to have the results before it draws.
+    func searchNow(_ query: String) -> [SearchResult] { searchIndex.search(query) }
 
     func stop() {
         liveTask?.cancel()

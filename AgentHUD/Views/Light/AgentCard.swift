@@ -66,6 +66,10 @@ struct AgentCard: View {
             .padding(.horizontal, 12).padding(.vertical, 10)
         }
         .frame(height: Self.height)
+        // Over: greyed out, and nothing behind it to open.
+        .saturation(agent.isEnded ? 0 : 1)
+        .opacity(agent.isEnded ? 0.55 : 1)
+        .help(agent.isEnded ? "This session has ended. What it said isn't kept, so it can't be opened." : "")
         .animation(.easeOut(duration: 0.15), value: selected)
     }
 

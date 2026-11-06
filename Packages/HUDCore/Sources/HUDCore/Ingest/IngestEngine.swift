@@ -29,15 +29,18 @@ public actor IngestEngine {
 
     private let registry: SessionRegistry
     private let projectsDirectory: URL
+    /// What live sessions have said, for the search bar. Ended sessions are dropped from it on every poll.
+    public nonisolated let search: SearchIndex
     private var tracked: [String: Tracked] = [:]
     /// Transcripts of sessions that ended before the app launched, loaded one per poll so startup stays snappy.
     private var backlog: [URL]?
     /// How many live sessions have been read, after the last poll.
     public private(set) var progress = LoadProgress(read: 0, total: 0)
 
-    public init(claudeHome: URL = SessionRegistry.defaultClaudeHome) {
+    public init(claudeHome: URL = SessionRegistry.defaultClaudeHome, search: SearchIndex = SearchIndex()) {
         registry = SessionRegistry(claudeHome: claudeHome)
         projectsDirectory = claudeHome.appendingPathComponent("projects")
+        self.search = search
     }
 
     /// Reads whatever was appended since the last call. Returns live agents first, then recently ended sessions.
@@ -51,10 +54,10 @@ public actor IngestEngine {
         let liveIds = Set(entries.map(\.sessionId))
 
         for entry in entries {
+            // A resumed session comes back to life. What it said was dropped when it ended, so it is read again from the start.
+            if tracked[entry.sessionId]?.endedAt != nil { tracked[entry.sessionId] = nil }
             if tracked[entry.sessionId] == nil, let url = transcriptURL(sessionId: entry.sessionId) { tracked[entry.sessionId] = Tracked(url: url) }
             tracked[entry.sessionId]?.entry = entry
-            // A resumed session comes back to life.
-            tracked[entry.sessionId]?.endedAt = nil
         }
         for id in tracked.keys where !liveIds.contains(id) && tracked[id]?.endedAt == nil {
             // Read before writing: an optional-chained assignment holds a modify access on
@@ -74,25 +77,36 @@ public actor IngestEngine {
             if !session.hasRead { firstReads += 1 }
             var subagents: [SubagentInfo]?
             if isLive || session.lastScan == .distantPast || !session.hasRead {
-                for event in session.tailer.poll() { session.state.apply(event) }
-                subagents = session.subagents.poll()
+                var said: [SearchIndex.Message] = []
+                for event in session.tailer.poll() {
+                    session.state.apply(event)
+                    if isLive, let message = SearchIndex.Message(event) { said.append(message) }
+                }
+                search.add(said, to: id)
+                if isLive { subagents = session.subagents.poll() }
                 session.hasRead = true
             }
+            if !isLive {
+                // Nothing behind an ended session's card can be opened, so the engine stops holding what it said.
+                session.state.forget()
+                session.diskChanges = [:]
+            }
             let busy = session.entry?.isBusy ?? false
-            // Idle and ended sessions change nothing, so they are only scanned once.
+            // Idle sessions change nothing, so they are only scanned once. Ended ones show no files, so they never are.
             // The registry's start time resets when a session is resumed; the transcript remembers the real one.
             if let started = [session.entry?.startedAt, session.state.firstEventAt].compactMap({ $0 }).min(),
-               now.timeIntervalSince(session.lastScan) > Self.scanInterval, busy || session.lastScan == .distantPast,
+               isLive, now.timeIntervalSince(session.lastScan) > Self.scanInterval, busy || session.lastScan == .distantPast,
                let root = session.entry?.cwd ?? session.state.cwd {
-                // For a finished session, ignore whatever happened in its directory afterwards.
-                let until = session.endedAt.map { $0.addingTimeInterval(120) } ?? .distantFuture
-                session.diskChanges = DirectoryScanner.changedFiles(in: root, since: started, until: until)
+                session.diskChanges = DirectoryScanner.changedFiles(in: root, since: started)
                 session.lastScan = now
             }
             var snapshot = Self.snapshot(id: id, session: &session, now: now)
-            snapshot.subagents = subagents ?? session.subagents.poll()
+            if isLive { snapshot.subagents = subagents ?? session.subagents.poll() }
             tracked[id] = session
             if isLive {
+                search.describe(id, as: SearchIndex.Names(
+                    folder: Self.tildePath(snapshot.cwd), name: snapshot.name, title: snapshot.recap.headline,
+                    branch: snapshot.gitBranch, lastActive: session.state.lastEventAt))
                 // A working agent ranks by the prompt that started its turn, so it does not jump
                 // around mid-turn; an idle one by when it last did anything.
                 let recency = busy ? session.state.promptTicks.last ?? session.state.lastEventAt : session.state.lastEventAt
@@ -101,8 +115,10 @@ public actor IngestEngine {
             // A transcript that never got an answer (opened and quit) is noise in the history.
             else if snapshot.usage.total > 0 { ended.append(snapshot) }
         }
-        let liveSessions = tracked.values.filter { $0.endedAt == nil }
-        progress = LoadProgress(read: liveSessions.filter(\.hasRead).count, total: liveSessions.count)
+        let liveSessions = tracked.filter { $0.value.endedAt == nil }
+        progress = LoadProgress(read: liveSessions.values.filter(\.hasRead).count, total: liveSessions.count)
+        // The search index is only for finding live agents, so a session that has ended leaves it now.
+        search.retain(only: Set(liveSessions.keys))
         // Working agents on top, then the rest by recency; history stays below, newest first.
         live.sort { a, b in a.busy != b.busy ? a.busy : a.recency > b.recency }
         ended.sort { ($0.endedAt ?? .distantPast) > ($1.endedAt ?? .distantPast) }
@@ -189,7 +205,28 @@ public actor IngestEngine {
         snapshot.files = mergeFiles(transcript: state.fileChanges, disk: session.diskChanges)
         snapshot.endedAt = session.endedAt
         snapshot.recap = state.recap
+        if !isLive { forget(&snapshot) }
         return snapshot
+    }
+
+    /// An ended session can't be opened, so its card gets the folder and the numbers and nothing that was
+    /// said or worked on: no prompts or replies, titles, steps, plan, file paths or errors. The engine has
+    /// already dropped these from the session's state; this makes sure none reach the UI either.
+    static func forget(_ snapshot: inout AgentSnapshot) {
+        snapshot.name = snapshot.repo
+        snapshot.recap = SessionRecap()
+        snapshot.ticker = []
+        snapshot.steps = []
+        snapshot.plan = []
+        snapshot.loops = []
+        snapshot.brain = []
+        snapshot.files = []
+        snapshot.subagents = []
+    }
+
+    static func tildePath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
     /// Claude Code runs the Claude 5 family on a 1M window, and older models when opted in with `[1m]`.

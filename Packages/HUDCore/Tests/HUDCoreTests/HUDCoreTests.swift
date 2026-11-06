@@ -311,7 +311,7 @@ private func events(_ lines: [String]) -> [TranscriptEvent] {
         try Data(#"{"agentType":"Explore","description":"Explore tests","toolUseId":"toolu_A","spawnDepth":1}"#.utf8)
             .write(to: subagents.appendingPathComponent("agent-abc.meta.json"))
 
-        // No registry entry: the session ended before launch, and must still show up as history.
+        // No registry entry: the session ended before launch, and must still show up as history, without its detail.
         let engine = IngestEngine(claudeHome: home)
         let snapshots = await engine.poll(now: now)
         let session = try #require(snapshots.first)
@@ -319,7 +319,14 @@ private func events(_ lines: [String]) -> [TranscriptEvent] {
         #expect(session.repo == "repo")
         #expect(session.activity == .idle)
         #expect(session.usage.output == 40)
-        let subagent = try #require(session.subagents.first)
+        #expect(session.subagents.isEmpty)
+
+        // Resumed, it is live again and its subagents are read.
+        let registry = home.appendingPathComponent("sessions/sess1.json")
+        try Data(#"{"pid":\#(getpid()),"sessionId":"sess1","cwd":"/x/repo","status":"idle"}"#.utf8).write(to: registry)
+        let live = try #require(await engine.poll(now: now).first)
+        #expect(!live.isEnded)
+        let subagent = try #require(live.subagents.first)
         #expect(subagent.toolUseId == "toolu_A")
         #expect(subagent.agentType == "Explore")
         #expect(subagent.model == "claude-haiku-4-5-20251001")
@@ -327,6 +334,8 @@ private func events(_ lines: [String]) -> [TranscriptEvent] {
         #expect(subagent.toolCalls == 1)
         #expect(subagent.finished)
 
+        try FileManager.default.removeItem(at: registry)
+        #expect(await engine.poll(now: now).first?.isEnded == true)
         let later = await engine.poll(now: now.addingTimeInterval(IngestEngine.historyWindow + 60))
         #expect(later.isEmpty, "history expires")
     }

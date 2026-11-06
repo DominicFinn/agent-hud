@@ -21,6 +21,11 @@ enum SnapshotRenderer {
             for tab in HeroTab.allCases {
                 save(DashboardView(monitor: monitor, initialTab: tab), DashboardView.designSize, directory.appendingPathComponent("dashboard-\(tab.rawValue)-\(tag).png"))
             }
+            // The search panel shows what sessions said, so only the demo fleet's gets drawn.
+            if monitor.demo != nil {
+                save(DashboardView(monitor: monitor, initialQuery: "test"), DashboardView.designSize,
+                     directory.appendingPathComponent("dashboard-search-\(tag).png"))
+            }
             // The dashboard reflows rather than scaling, so it is worth seeing both ends of its range.
             save(DashboardView(monitor: monitor), CGSize(width: 1040, height: 640), directory.appendingPathComponent("dashboard-narrow-\(tag).png"))
             save(DashboardView(monitor: monitor), CGSize(width: 1680, height: 1000), directory.appendingPathComponent("dashboard-wide-\(tag).png"))

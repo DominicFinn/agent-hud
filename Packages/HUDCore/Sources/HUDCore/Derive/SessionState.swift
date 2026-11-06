@@ -58,6 +58,27 @@ public struct SessionState: Sendable {
 
     public init() {}
 
+    /// For a session that has ended: drops what was said and worked on, and keeps the numbers its card
+    /// shows (tokens, context, activity lanes, heartbeat, folder and branch).
+    public mutating func forget() {
+        title = nil
+        agentName = nil
+        aiTitle = nil
+        firstPrompt = nil
+        lastPrompt = nil
+        lastReply = nil
+        pullRequests = []
+        ticker = []
+        steps = []
+        plan = []
+        loops = []
+        fileChanges = [:]
+        pendingTools = [:]
+        brainItems = [:]
+        failureStreaks = [:]
+        lastEditLabel = nil
+    }
+
     public var recap: SessionRecap {
         SessionRecap(customTitle: title ?? agentName, aiTitle: aiTitle, firstPrompt: firstPrompt,
                      lastPrompt: lastPrompt, lastReply: lastReply, pullRequests: pullRequests)

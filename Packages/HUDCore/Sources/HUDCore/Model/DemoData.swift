@@ -39,7 +39,20 @@ public enum DemoData {
         }
     }
 
-    /// Two sessions that finished earlier today.
+    /// A search index holding what the demo fleet said: each session's recap prompts and reply.
+    public static func search(_ agents: [AgentSnapshot]) -> SearchIndex {
+        let index = SearchIndex()
+        for agent in agents {
+            let recap = agent.recap
+            let said: [(SearchMessage.Role, SessionNote?)] = [(.prompt, recap.firstPrompt), (.prompt, recap.lastPrompt), (.reply, recap.lastReply)]
+            index.add(said.compactMap { role, note in note.map { SearchIndex.Message(role: role, date: $0.date, text: $0.text) } }, to: agent.id)
+            index.describe(agent.id, as: SearchIndex.Names(folder: agent.cwd, name: agent.name, title: recap.headline,
+                                                           branch: agent.gitBranch, lastActive: recap.lastReply?.date))
+        }
+        return index
+    }
+
+    /// Two sessions that finished earlier today, with what they said dropped as the engine does.
     public static func recent(now: Date = Date()) -> [AgentSnapshot] {
         let fleet: [(String, String, String, ActivityKind, Double, Int, TimeInterval, Int)] = [
             ("juniper", "feat/landing-page", "claude-sonnet-5", .idle, 0.34, 410_000, 95 * 60, 0),
@@ -49,7 +62,7 @@ public enum DemoData {
             var snapshot = agent(index, entry, .idle, now)
             snapshot.activity = .idle
             snapshot.endedAt = now.addingTimeInterval(-Double(index + 1) * 2.4 * 3600)
-            snapshot.files = Array(files(root: snapshot.cwd, now: now).prefix(7 - index * 2))
+            IngestEngine.forget(&snapshot)
             return snapshot
         }
     }

@@ -21,6 +21,11 @@ struct DashboardView: View {
     @State private var laneRange: LaneRange = .hour
     @State private var activeOnly = false
     @AppStorage("blurThoughts") private var blurThoughts = false
+    // Search. The query is never stored anywhere.
+    @State private var query = ""
+    @State private var results: [SearchResult] = []
+    @State private var resultSelection: String?
+    @State private var searchOpen = false
     // Pane sizes are draggable and persist. The defaults are the handoff's grid at 1280×800.
     // They are @State, not @AppStorage: writing UserDefaults on every drag frame makes the whole
     // dashboard re-render through the defaults system and the drag stutters.
@@ -36,9 +41,15 @@ struct DashboardView: View {
     private func persist(_ key: String, _ value: Double) { UserDefaults.standard.set(value, forKey: key) }
     @FocusState private var focused: Bool
 
-    init(monitor: AgentMonitor, initialTab: HeroTab = .flow) {
+    /// `initialQuery` opens the search panel with its results, for `--snapshot`.
+    init(monitor: AgentMonitor, initialTab: HeroTab = .flow, initialQuery: String? = nil) {
         self.monitor = monitor
         _heroTab = State(initialValue: initialTab)
+        if let initialQuery {
+            _query = State(initialValue: initialQuery)
+            _results = State(initialValue: monitor.searchNow(initialQuery))
+            _searchOpen = State(initialValue: true)
+        }
     }
 
     /// Live sessions first, then the ones that ended recently. Built once per render, not per read.
@@ -56,6 +67,12 @@ struct DashboardView: View {
         .focused($focused)
         .onAppear { focused = true }
         .onKeyPress { press in handle(press) }
+        .onChange(of: query) {
+            searchOpen = !query.isEmpty
+            resultSelection = nil
+        }
+        // Re-run as sessions change, so one that ends drops out of the results while they are open.
+        .task(id: "\(searchOpen) \(monitor.lastRefresh.timeIntervalSince1970) \(query)") { await runSearch() }
     }
 
     private func content(in size: CGSize) -> some View {
@@ -74,6 +91,7 @@ struct DashboardView: View {
                 .frame(height: stream)
                 .padding(.horizontal, 16).padding(.bottom, 10)
         }
+        .overlay(alignment: .top) { searchOverlay(in: size) }
         .background(Theme.canvas)
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.window).strokeBorder(Theme.border, lineWidth: 1))
     }
@@ -89,6 +107,10 @@ struct DashboardView: View {
             Text("Agents").font(Theme.ui(17, .semibold)).foregroundStyle(Theme.ink)
             Text(monitor.isLoading ? monitor.loadingText : "\(monitor.agents.count) sessions · \(monitor.activeCount) active")
                 .font(Theme.ui(12)).foregroundStyle(Theme.mute)
+                .fixedSize()
+            SearchField(text: $query, onCommand: searchCommand, onFocus: { searchOpen = !query.isEmpty })
+                .frame(minWidth: 170, maxWidth: 280)
+                .padding(.leading, 8)
             Spacer(minLength: 12)
             ToolbarButton(title: laneRange.title.capitalizedFirst, symbol: "chevron.down") { cycleRange() }
             ToolbarButton(title: activeOnly ? "Active only" : "+ Filter",
@@ -106,6 +128,73 @@ struct DashboardView: View {
     private func cycleRange() {
         let all = LaneRange.allCases
         laneRange = all[(all.firstIndex(of: laneRange).map { $0 + 1 } ?? 0) % all.count]
+    }
+
+    // MARK: Search
+
+    /// Results for sessions that are still live; the index can be a poll behind the rail.
+    private var visibleResults: [SearchResult] {
+        let live = Set(monitor.agents.map(\.id))
+        return results.filter { live.contains($0.sessionId) }
+    }
+
+    private func runSearch() async {
+        guard !staticRendering else { return }
+        let current = query
+        guard searchOpen, !current.allSatisfy(\.isWhitespace) else { return results = [] }
+        // Wait for a pause in typing.
+        try? await Task.sleep(for: .milliseconds(100))
+        guard !Task.isCancelled else { return }
+        let found = await monitor.search(current)
+        if !Task.isCancelled { results = found }
+    }
+
+    @ViewBuilder
+    private func searchOverlay(in size: CGSize) -> some View {
+        if searchOpen, !query.allSatisfy(\.isWhitespace) {
+            ZStack(alignment: .top) {
+                // A click anywhere outside the panel closes it.
+                Color.clear.contentShape(Rectangle()).onTapGesture { searchOpen = false }
+                SearchPanel(query: query, results: visibleResults,
+                            agents: Dictionary(monitor.agents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+                            selection: $resultSelection, blur: blurThoughts, onChoose: choose)
+                    .frame(width: min(780, size.width - 32), height: min(440, size.height - 52 - 24))
+                    .padding(.top, 4)
+            }
+            .padding(.top, 52)
+        }
+    }
+
+    private func searchCommand(_ command: SearchField.Command) {
+        let visible = visibleResults
+        let current = visible.firstIndex { $0.id == resultSelection } ?? 0
+        switch command {
+        case .up, .down:
+            guard !visible.isEmpty else { return }
+            searchOpen = !query.isEmpty
+            resultSelection = visible[max(0, min(visible.count - 1, current + (command == .up ? -1 : 1)))].id
+        case .submit:
+            if visible.indices.contains(current) { choose(visible[current].id) }
+        case .cancel:
+            query = ""
+            searchOpen = false
+            leaveSearch()
+        }
+    }
+
+    /// Opens the session in the dashboard at its Recap, which is where its prompts and replies are.
+    private func choose(_ id: String) {
+        monitor.selectedId = id
+        heroTab = .recap
+        query = ""
+        searchOpen = false
+        leaveSearch()
+    }
+
+    /// Gives the keyboard back to the dashboard, so its single-key shortcuts work again.
+    private func leaveSearch() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        focused = true
     }
 
     // MARK: Metrics strip
@@ -219,7 +308,8 @@ struct DashboardView: View {
         let showTerminal = terminalAction(agent)
         return AgentCard(agent: agent, selected: agent.id == monitor.selected?.id, onShowTerminal: showTerminal)
             .contentShape(Rectangle())
-            .onTapGesture { monitor.selectedId = agent.id }
+            // An ended session's card stays in the list, but there is nothing behind it to open.
+            .onTapGesture { if !agent.isEnded { monitor.selectedId = agent.id } }
             .contextMenu {
                 if let showTerminal { Button("Show in Terminal", action: showTerminal) }
             }
@@ -285,12 +375,15 @@ struct DashboardView: View {
     private var heroTitle: String {
         guard let agent = monitor.selected else { return "Thinking flow" }
         let name = heroTab == .flow ? "Thinking flow" : heroTab.title
-        return "\(name) · \(agent.repo)" + (agent.isEnded ? " · ended" : "")
+        return "\(name) · \(agent.repo)"
     }
 
     // MARK: Keyboard
 
     private func handle(_ press: KeyPress) -> KeyPress.Result {
+        // SwiftUI offers keys here before the text field that has the cursor, so while you're typing a
+        // search the shortcuts stand aside, or "s" would open the Files tab instead of being typed.
+        if NSApp.keyWindow?.firstResponder is NSText { return .ignored }
         switch press.key {
         case .upArrow: move(-1)
         case .downArrow: move(1)
@@ -301,6 +394,8 @@ struct DashboardView: View {
             } else if character == "t" {
                 guard let agent = monitor.selected, let show = terminalAction(agent) else { return .ignored }
                 show()
+            } else if character == "/" {
+                NotificationCenter.default.post(name: .focusSearch, object: nil)
             } else if character == "p" {
                 blurThoughts.toggle()
             } else if let range = BurnRange.allCases.first(where: { $0.rawValue.first == character }) {
@@ -312,11 +407,13 @@ struct DashboardView: View {
         return .handled
     }
 
+    /// Steps through the live sessions; ended ones can't be selected.
     private func move(_ delta: Int) {
-        guard !rows.isEmpty else { return }
-        let current = rows.firstIndex { $0.id == monitor.selected?.id } ?? 0
-        let next = max(0, min(rows.count - 1, current + delta))
-        monitor.selectedId = rows[next].id
+        let live = rows.filter { !$0.isEnded }
+        guard !live.isEmpty else { return }
+        let current = live.firstIndex { $0.id == monitor.selected?.id } ?? 0
+        let next = max(0, min(live.count - 1, current + delta))
+        monitor.selectedId = live[next].id
     }
 }
 

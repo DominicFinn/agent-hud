@@ -4,6 +4,7 @@ import HUDCore
 // Prints what the HUD sees right now. Handy for debugging ingest without the UI.
 //   hudctl          live agents
 //   hudctl stats    history aggregates (uses a throwaway index, so it always times a full backfill)
+//   hudctl search <words>   what the search bar finds among live sessions
 
 if CommandLine.arguments.dropFirst().first == "stats" {
     let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("hudctl-index-\(UUID().uuidString).json")
@@ -20,6 +21,26 @@ if CommandLine.arguments.dropFirst().first == "stats" {
     let day = stats.burn[.day] ?? []
     print("24h output:", day.map { String(($0.output + $0.thinking) / 1000) }.joined(separator: " "))
     print("active days in 12 weeks:", stats.heatmap.joined().filter { ($0 ?? 0) > 0 }.count)
+    exit(0)
+}
+
+if CommandLine.arguments.dropFirst().first == "search" {
+    let query = CommandLine.arguments.dropFirst(2).joined(separator: " ")
+    let engine = IngestEngine()
+    var started = Date()
+    let agents = Dictionary(await engine.poll().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    print(String(format: "indexed %d live sessions, %d messages, in %.1fs", engine.search.sessions.count,
+                 engine.search.messageCount, Date().timeIntervalSince(started)))
+    started = Date()
+    let results = engine.search.search(query)
+    print(String(format: "%d results in %.1f ms", results.count, Date().timeIntervalSince(started) * 1000))
+    func marked(_ text: Highlighted) -> String { text.spans.map { $0.isMatch ? "«\($0.text)»" : $0.text }.joined() }
+    for result in results {
+        let agent = agents[result.sessionId]
+        print("● \(agent?.repo ?? result.sessionId)  \(agent?.recap.headline ?? "")  \(result.matches) matching messages")
+        if let match = result.nameMatch { print("  \(match.field): \(marked(match.text))") }
+        if let best = result.best { print("  \(best.role == .prompt ? "you" : "claude"): \(marked(best.text))") }
+    }
     exit(0)
 }
 

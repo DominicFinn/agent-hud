@@ -79,6 +79,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func toggleMini() { isMini.toggle() }
 
+    @objc func focusSearch() {
+        let opening = dashboard == nil
+        showDashboard()
+        // A window made just now has not built its search field yet.
+        if opening {
+            DispatchQueue.main.async { NotificationCenter.default.post(name: .focusSearch, object: nil) }
+        } else {
+            NotificationCenter.default.post(name: .focusSearch, object: nil)
+        }
+    }
+
     @objc func resetWidgetPosition() {
         panel?.placeInDefaultCorner()
         if !isWidgetVisible { toggleWidget() }
@@ -160,6 +171,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         app.addItem(.separator())
         app.addItem(item("Quit Agent HUD", #selector(NSApplication.terminate(_:)), key: "q"))
         add(app)
+
+        // Text fields only get copy, paste and select all from the menu's key equivalents.
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(item("Undo", Selector(("undo:")), key: "z"))
+        let redo = item("Redo", Selector(("redo:")), key: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(item("Cut", #selector(NSText.cut(_:)), key: "x"))
+        edit.addItem(item("Copy", #selector(NSText.copy(_:)), key: "c"))
+        edit.addItem(item("Paste", #selector(NSText.paste(_:)), key: "v"))
+        edit.addItem(item("Select All", #selector(NSText.selectAll(_:)), key: "a"))
+        edit.addItem(.separator())
+        edit.addItem(item("Find…", #selector(focusSearch), key: "f", target: self))
+        add(edit)
 
         add(buildViewMenu(title: "View"))
 
